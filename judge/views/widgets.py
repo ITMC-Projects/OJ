@@ -89,6 +89,8 @@ def martor_image_uploader(request):
 
 
 def csrf_failure(request: HttpRequest, reason=''):
+    if request.resolver_match and request.resolver_match.url_name == 'auth_user_sync_ots':
+        return HttpResponseForbidden('CSRF verification failed.')
     # Redirect to the same page in case of CSRF failure
     # So that we can turn on cloudflare DDOS protection without
     # showing the CSRF failure page to user

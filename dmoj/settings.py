@@ -783,3 +783,13 @@ try:
         exec(f.read(), globals())
 except IOError:
     pass
+
+# Keep locally configured/default hashers, including the preferred algorithm.
+from django.conf.global_settings import PASSWORD_HASHERS as DEFAULT_PASSWORD_HASHERS  # noqa: E402
+PASSWORD_HASHERS = list(globals().get('PASSWORD_HASHERS', DEFAULT_PASSWORD_HASHERS))
+PASSWORD_HASHERS += ['judge.auth.ots_password_hasher.OTSBcryptPasswordHasher']
+OTS_SYNC_API_URL = os.environ.get('OTS_SYNC_API_URL', '')
+OTS_SYNC_SERVICE_TOKEN = os.environ.get('OTS_SYNC_SERVICE_TOKEN', '')
+OTS_SYNC_TIMEOUT_SECONDS = float(os.environ.get('OTS_SYNC_TIMEOUT_SECONDS', '10'))
+OTS_SYNC_PAGE_SIZE = int(os.environ.get('OTS_SYNC_PAGE_SIZE', '100'))
+OTS_SYNC_ALLOW_INTERNAL_HTTP = os.environ.get('OTS_SYNC_ALLOW_INTERNAL_HTTP', '0') == '1'

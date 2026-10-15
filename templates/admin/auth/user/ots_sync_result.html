@@ -1,0 +1,39 @@
+{% extends "admin/base_site.html" %}
+{% block extrahead %}
+{{ block.super }}
+{% if running %}<meta http-equiv="refresh" content="5">{% endif %}
+{% endblock %}
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  #ots-summary { width: 100%; max-width: 24rem; }
+  #ots-summary caption { text-align: left; padding-bottom: 8px; }
+</style>
+{% endblock %}
+{% block content %}
+<p><a href="{% url 'admin:auth_user_changelist' %}">Quay lại tài khoản</a> ·
+<a href="{% url 'admin:judge_otsaccountsyncrun_changelist' %}">Lịch sử đồng bộ</a></p>
+<h2>Sync Up OTS — {{ run.status }}</h2>
+{% if running %}<p role="status">Đang đồng bộ. Trang tự cập nhật mỗi 5 giây.</p>{% endif %}
+{% if run.error_summary %}<p role="alert">{{ run.error_summary }}</p>{% endif %}
+<table id="ots-summary">
+  <caption>Kết quả lần đồng bộ #{{ run.pk }}</caption>
+  <tbody>
+    <tr><th scope="row">Total</th><td>{{ run.total }}</td></tr>
+    <tr><th scope="row">Created</th><td>{{ run.created_count }}</td></tr>
+    <tr><th scope="row">Updated</th><td>{{ run.updated_count }}</td></tr>
+    <tr><th scope="row">Unchanged</th><td>{{ run.unchanged_count }}</td></tr>
+    <tr><th scope="row">Failed</th><td>{{ run.failed_count }}</td></tr>
+  </tbody>
+</table>
+{% if errors %}
+<h2>Tài khoản cần kiểm tra</h2>
+<table>
+  <thead><tr><th scope="col">MSSV</th><th scope="col">Error</th></tr></thead>
+  <tbody>{% for error in errors %}<tr><td>{{ error.student_id|default:"—" }}</td><td>{{ error.code }}</td></tr>{% endfor %}</tbody>
+</table>
+<p>Trang {{ errors.number }} / {{ errors.paginator.num_pages }}
+{% if errors.has_previous %}<a href="?page={{ errors.previous_page_number }}">Trước</a>{% endif %}
+{% if errors.has_next %}<a href="?page={{ errors.next_page_number }}">Sau</a>{% endif %}</p>
+{% elif not running and not run.error_summary %}<p>Không có lỗi tài khoản.</p>{% endif %}
+{% endblock %}

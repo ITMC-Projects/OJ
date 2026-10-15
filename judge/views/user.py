@@ -33,9 +33,10 @@ from django.views.decorators.http import require_POST
 from django.views.generic import DetailView, FormView, ListView, TemplateView, View
 from reversion import revisions
 
+from judge.auth.ots_forms import OTSPasswordResetForm
 from judge.forms import CustomAuthenticationForm, ProfileForm, UserBanForm, UserDownloadDataForm, UserForm, \
     newsletter_id
-from judge.models import BlogPost, Organization, Profile, Submission
+from judge.models import BlogPost, Organization, OTSAccountLink, Profile, Submission
 from judge.models import Comment
 from judge.performance_points import get_pp_breakdown
 from judge.ratings import rating_class, rating_progress
@@ -177,6 +178,11 @@ class CustomLoginView(LoginView):
 
 class CustomPasswordChangeView(PasswordChangeView):
     template_name = 'registration/password_change_form.html'
+
+    def dispatch(self, request, *args, **kwargs):
+        if request.user.is_authenticated and OTSAccountLink.objects.filter(user=request.user).exists():
+            return HttpResponse('Tài khoản OTS phải đổi mật khẩu tại OTS.', status=403)
+        return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form):
         self.request.session['password_pwned'] = False
@@ -691,6 +697,7 @@ class UserLogoutView(TitleMixin, TemplateView):
 
 
 class CustomPasswordResetView(PasswordResetView):
+    form_class = OTSPasswordResetForm
     title = gettext_lazy('Password reset')
     from_email = settings.SERVER_EMAIL
     template_name = 'registration/password_reset.html'

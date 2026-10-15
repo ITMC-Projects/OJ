@@ -1,0 +1,35 @@
+{% extends "admin/change_list.html" %}
+{% block extrastyle %}
+  {{ block.super }}
+  <style>
+    #ots-confirm { width: 32rem; max-width: calc(100vw - 3rem); box-sizing: border-box;
+      border: 1px solid #ccc; border-radius: 4px; padding: 24px; }
+    #ots-confirm::backdrop { background: rgba(0, 0, 0, .3); }
+    #ots-confirm p { line-height: 1.5; }
+    #ots-confirm .ots-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+  </style>
+{% endblock %}
+{% block object-tools-items %}
+  {% if request.user.is_superuser %}
+    <li><button class="button" type="button" onclick="document.getElementById('ots-confirm').showModal()">Sync Up OTS</button></li>
+    <li><a href="{% url 'admin:judge_otsaccountsyncrun_changelist' %}">Lịch sử đồng bộ OTS</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
+{% block content %}
+  {{ block.super }}
+  {% if request.user.is_superuser %}
+  <dialog id="ots-confirm" aria-labelledby="ots-confirm-title">
+    <h2 id="ots-confirm-title">Sync Up OTS</h2>
+    <p>Đồng bộ toàn bộ tài khoản thí sinh từ OTS? Thao tác có thể tạo mới, cập nhật hồ sơ, mật khẩu và trạng thái tài khoản OJ.</p>
+    <form method="post" action="{% url 'admin:auth_user_sync_ots' %}"
+          onsubmit="this.querySelector('[type=submit]').disabled = true">
+      {% csrf_token %}
+      <div class="ots-actions">
+        <button class="button" type="button" onclick="this.closest('dialog').close()">Hủy</button>
+        <button class="button default" type="submit">Xác nhận đồng bộ</button>
+      </div>
+    </form>
+  </dialog>
+  {% endif %}
+{% endblock %}

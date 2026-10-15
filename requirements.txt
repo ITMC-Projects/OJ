@@ -15,7 +15,7 @@ Pygments<2.12
 mistune<2
 social-auth-core==4.3.0
 social-auth-app-django==5.0.0
-pytz
+pytz==2026.5
 django-statici18n
 pika
 ua-parser
@@ -24,6 +24,7 @@ jinja2
 django_jinja>=2.5.0
 llist
 requests
+bcrypt==4.3.0
 django-fernet-fields @ git+https://github.com/DMOJ/django-fernet-fields.git
 pyotp
 qrcode[pil]

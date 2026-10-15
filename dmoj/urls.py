@@ -13,6 +13,7 @@ from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.generic import RedirectView
 from martor.views import markdown_search_user
 
+from judge.auth.ots_forms import OTSSetPasswordForm
 from judge.feed import AtomBlogFeed, AtomCommentFeed, AtomProblemFeed, BlogFeed, CommentFeed, ProblemFeed
 from judge.sitemap import sitemaps
 from judge.views import TitledTemplateView, api, blog, comment, contests, language, license, mailgun, organization, \
@@ -60,6 +61,7 @@ register_patterns = [
     path('password/reset/', user.CustomPasswordResetView.as_view(), name='password_reset'),
     re_path(r'^password/reset/confirm/(?P<uidb64>[0-9A-Za-z]+)-(?P<token>.+)/$',
             auth_views.PasswordResetConfirmView.as_view(
+                form_class=OTSSetPasswordForm,
                 template_name='registration/password_reset_confirm.html',
                 title=_('Enter new password'),
             ), name='password_reset_confirm'),

@@ -1,13 +1,19 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as OldUserAdmin
+from django.core.exceptions import PermissionDenied
+from django.core.paginator import Paginator
 from django.forms import ModelForm
-from django.urls import reverse_lazy
+from django.http import HttpResponseNotAllowed
+from django.shortcuts import get_object_or_404, redirect
+from django.template.response import TemplateResponse
+from django.urls import path, reverse_lazy
 from django.utils.html import format_html
 from django.utils.translation import gettext, gettext_lazy as _, ngettext
 from reversion.admin import VersionAdmin
 
 from django_ace import AceWidget
-from judge.models import Profile, WebAuthnCredential
+from judge.models import OTSAccountLink, OTSAccountSyncRun, Profile, WebAuthnCredential
+from judge.services.ots_account_sync import SyncError, queue_sync
 from judge.utils.views import NoBatchDeleteMixin
 from judge.widgets import AdminMartorWidget, AdminSelect2MultipleWidget, AdminSelect2Widget
 
@@ -162,6 +168,42 @@ class ProfileAdmin(NoBatchDeleteMixin, VersionAdmin):
 
 
 class UserAdmin(OldUserAdmin):
+    change_list_template = 'admin/auth/user/change_list.html'
+
+    def get_urls(self):
+        return [
+            path('sync-ots/', self.admin_site.admin_view(self.sync_ots), name='auth_user_sync_ots'),
+            path('sync-ots/<int:run_id>/', self.admin_site.admin_view(self.sync_ots_result),
+                 name='auth_user_sync_ots_result'),
+        ] + super().get_urls()
+
+    def sync_ots(self, request):
+        if not request.user.is_superuser:
+            raise PermissionDenied
+        if request.method != 'POST':
+            return HttpResponseNotAllowed(['POST'])
+        try:
+            run = queue_sync(request.user)
+        except SyncError as error:
+            self.message_user(request, str(error), level='error')
+            return redirect('admin:auth_user_changelist')
+        return redirect('admin:auth_user_sync_ots_result', run_id=run.pk)
+
+    def sync_ots_result(self, request, run_id):
+        if not request.user.is_superuser:
+            raise PermissionDenied
+        run = get_object_or_404(OTSAccountSyncRun, pk=run_id)
+        context = {**self.admin_site.each_context(request), 'opts': self.model._meta,
+                   'title': 'Sync Up OTS', 'run': run,
+                   'running': run.status in ('QUEUED', 'RUNNING'),
+                   'errors': Paginator(run.errors.order_by('pk'), 100).get_page(request.GET.get('page'))}
+        return TemplateResponse(request, 'admin/auth/user/ots_sync_result.html', context)
+
+    def user_change_password(self, request, id, form_url=''):
+        if OTSAccountLink.objects.filter(user_id=id).exists():
+            raise PermissionDenied('Tài khoản OTS phải đổi mật khẩu tại OTS.')
+        return super().user_change_password(request, id, form_url)
+
     def save_model(self, request, obj, form, change):
         super().save_model(request, obj, form, change)
         if not change:
