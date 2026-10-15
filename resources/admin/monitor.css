@@ -1,0 +1,14 @@
+#monitor .module { margin-bottom: 24px; }
+#monitor .monitor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+#monitor .monitor-scroll { overflow-x: auto; }
+#monitor table { width: 100%; }
+#monitor th, #monitor td { padding: 12px; vertical-align: top; }
+#monitor dl { display: flex; flex-wrap: wrap; gap: 24px; padding: 16px; }
+#monitor dt { font-weight: 600; }
+#monitor dd { margin: 8px 0 0; font-variant-numeric: tabular-nums; }
+#monitor button { cursor: pointer; padding: 8px 12px; }
+#monitor button:focus-visible, #monitor a:focus-visible { outline: 2px solid var(--link-fg, #417690); outline-offset: 4px; }
+#monitor-alerts { padding: 0 24px; color: var(--body-fg, #333); }
+#monitor-detail { overflow-wrap: anywhere; padding: 16px; }
+#monitor-detail pre { white-space: pre-wrap; }
+@media (max-width: 700px) { #monitor th, #monitor td { padding: 8px; } #monitor dl { gap: 16px; } }

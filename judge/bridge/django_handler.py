@@ -19,8 +19,15 @@ class DjangoHandler(ZlibPacketHandler):
             'terminate-submission': self.on_termination,
             'disconnect-judge': self.on_disconnect_request,
             'disable-judge': self.on_disable_judge,
+            'monitor-state': self.on_monitor_state,
         }
         self.judges = judges
+
+    def on_monitor_state(self, data):
+        offset, limit = data.get('offset', 0), data.get('limit', 100)
+        if type(offset) is not int or type(limit) is not int or not 0 <= offset <= 1000000 or not 1 <= limit <= 100:
+            return {'name': 'bad-request'}
+        return self.judges.monitoring_snapshot(offset, limit)
 
     def send(self, data):
         super().send(json.dumps(data, separators=(',', ':')))

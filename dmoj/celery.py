@@ -39,6 +39,13 @@ app.conf.beat_schedule = {
     },
 }
 
+if settings.OTS_SYNC_AUTO_ENABLED:
+    app.conf.beat_schedule['ots-account-sync'] = {
+        'task': 'judge.tasks.ots_account_sync.auto_sync_ots_accounts',
+        'schedule': 30.0,
+        'options': {'expires': 30},
+    }
+
 
 @task_failure.connect()
 def celery_failure_log(sender, task_id, exception, traceback, *args, **kwargs):

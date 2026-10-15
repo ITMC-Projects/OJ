@@ -1,0 +1,19 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/monitor.css' %}">{% endblock %}
+{% block extrahead %}{{ block.super }}<script src="{% static 'admin/js/vendor/jquery/jquery.min.js' %}"></script><script src="{% static 'admin/js/jquery.init.js' %}"></script>{% endblock %}
+{% block breadcrumbs %}<div class="breadcrumbs"><a href="{% url 'admin:index' %}">Home</a> &rsaquo; <a href="{% url 'admin_monitor' %}">System monitoring</a></div>{% endblock %}
+{% block content %}
+<div id="monitor" data-api="{% url 'admin_monitor_overview' %}" data-root="{% url 'admin_monitor' %}" data-judge="{{ judge_name }}">
+  <div class="monitor-toolbar"><p id="monitor-status" role="status">Loading monitoring data…</p><button type="button" id="monitor-refresh">Refresh</button></div>
+  <p>Live state refreshes every 5 seconds. Unknown metrics are shown as —. Queue and database updates may briefly differ.</p>
+  <ul id="monitor-alerts" aria-label="Operational alerts"></ul>
+  <p id="monitor-unassigned"></p>
+  <section class="module"><h2>Infrastructure and execution</h2><dl id="monitor-summary"></dl></section>
+  <section class="module"><h2>Judges</h2><div class="monitor-scroll"><table><thead><tr><th>Judge</th><th>State</th><th>Tier</th><th>Submission</th><th>Cases received / total</th><th>Heartbeat age (s)</th><th>Ping (s)</th><th>Normalized load</th><th>Host metrics</th></tr></thead><tbody id="monitor-judges"></tbody></table></div></section>
+  <section class="module"><h2>Bridge queue (scheduler order)</h2><p id="monitor-queue-info"></p><div class="monitor-scroll"><table><thead><tr><th>Submission</th><th>Problem</th><th>Language</th><th>Priority</th><th>Target</th></tr></thead><tbody id="monitor-queue"></tbody></table></div><button type="button" id="monitor-prev">Previous</button> <button type="button" id="monitor-next">Next</button></section>
+  <section class="module"><h2>Judge details</h2><p id="monitor-detail-status">Select a judge to inspect testcase results and scheduling explanations.</p><div id="monitor-detail"></div><button type="button" id="monitor-cases-more" hidden>More testcases</button></section>
+  <section class="module"><h2>Historical arrival cohort (last hour)</h2><p id="monitor-history"></p><p>Completion throughput and dispatch latency use Bridge events from its current process lifetime, over at most 5 minutes. They exclude queue waiting time.</p></section>
+</div>
+<script src="{% static 'admin/monitor.js' %}" defer></script>
+{% endblock %}

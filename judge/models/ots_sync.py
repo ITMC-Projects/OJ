@@ -9,6 +9,7 @@ class OTSAccountLink(models.Model):
     ots_status = models.CharField(max_length=7, choices=[('ACTIVE', 'ACTIVE'), ('BLOCKED', 'BLOCKED')])
     local_disabled = models.BooleanField(default=False)
     source_updated_at = models.DateTimeField()
+    source_password_digest = models.CharField(max_length=64, blank=True, default='', editable=False)
     last_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

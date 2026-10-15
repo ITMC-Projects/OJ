@@ -1,4 +1,24 @@
-# Manual OTS account synchronization
+# OTS account synchronization
+
+Automatic synchronization is an authorized extension: enable
+`OTS_SYNC_AUTO_ENABLED=1` to check OTS every 30 seconds through Celery Beat.
+Use exactly one `beat` service per deployment. Run `make migrate`, then
+`make up` to start/recreate worker and scheduler with the root `.env`.
+Set the flag to `0` and recreate both services to disable automatic sync.
+The manual superuser button remains available.
+
+Scheduled ticks expire after 30 seconds. If a queued/running sync owns the
+database reservation, the tick is skipped rather than queued behind it.
+System runs have `triggered_by=NULL` and appear in the same history. Each
+successful cycle still exports all source accounts; allow for API load and
+roughly 2,880 history rows per day. A full scan taking longer than 30 seconds
+causes later ticks to skip until it finishes. This is not a real-time guarantee.
+
+Migration `0215_ots_password_digest` records a SHA-256 fingerprint of the
+source bcrypt hash. A stable source preserves Django's upgraded password and
+active sessions. A changed source password imports the new bcrypt hash and
+invalidates old sessions as usual. Existing links without a fingerprint are
+reconciled once on their first sync after this migration.
 
 Superusers can open `/admin/auth/user/`, select **Sync Up OTS**, confirm,
 and follow the queued/running result page. The page refreshes every five
@@ -43,7 +63,7 @@ OJ retains existing Django password hashers. Imported bcrypt uses
 `ots_bcrypt$<source-hash>`; supported prefixes are `$2a$`, `$2b$`, `$2y$`
 with costs 4–16. Higher costs are rejected to bound login CPU. Django may
 upgrade the imported hash after login. The next sync restores the current
-source hash, including any OTS password change. Passwords over 72 UTF-8
+source password when its fingerprint changes. Passwords over 72 UTF-8
 bytes cannot authenticate through the imported Go bcrypt verifier.
 
 ## Identity and local controls

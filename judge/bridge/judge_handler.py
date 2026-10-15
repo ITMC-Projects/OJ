@@ -16,6 +16,7 @@ from judge.caching import finished_submission
 from judge.models import Judge, Language, LanguageLimit, Problem, Profile, \
     RuntimeVersion, Submission, SubmissionTestCase
 from judge.models.problem import ProblemTestcaseResultAccess
+from judge.monitor_metrics import clean_metrics
 from judge.utils.url import get_absolute_submission_file_url
 
 logger = logging.getLogger('judge.bridge')
@@ -57,6 +58,9 @@ class JudgeHandler(ZlibPacketHandler):
             'handshake': self.on_handshake,
         }
         self._working = False
+        self.monitor_activity = {}
+        self.monitor_metrics = {}
+        self.monitor_last_ping = None
         self._no_response_job = None
         self.executors = {}
         self.problems = {}
@@ -236,6 +240,8 @@ class JudgeHandler(ZlibPacketHandler):
     def submit(self, id, problem, language, source):
         data = self.get_related_submission_data(id)
         self._working = id
+        self.monitor_activity = {'submission': id, 'started': time.time(), 'updated': time.time(),
+                                 'event': 'dispatched'}
         self._no_response_job = threading.Timer(20, self._kill_if_no_response)
         self.send({
             'name': 'submission-request',
@@ -313,6 +319,9 @@ class JudgeHandler(ZlibPacketHandler):
             else:
                 handler = self.handlers.get(data['name'], self.on_malformed)
                 handler(data)
+                if data.get('submission-id') == self._working:
+                    with self.judges.lock:
+                        self.monitor_activity = dict(self.monitor_activity, updated=time.time(), event=data['name'])
         except Exception:
             logger.exception('Error in packet handling (Judge-side): %s', self.name)
             self._packet_exception()
@@ -619,9 +628,19 @@ class JudgeHandler(ZlibPacketHandler):
         self.latency = sum(self._ping_average) / len(self._ping_average)
         self.time_delta = sum(self._time_delta) / len(self._time_delta)
         self.load = packet['load']
+        with self.judges.lock:
+            self.monitor_last_ping = end
+            self.monitor_metrics = clean_metrics(packet.get('monitor-metrics', {}))
         self._update_ping()
 
     def _free_self(self, packet):
+        with self.judges.lock:
+            activity = self.monitor_activity
+            if activity.get('submission') == packet['submission-id'] and activity.get('started'):
+                self.judges.monitor_completed.append({
+                    'finished': time.time(), 'event': packet['name'],
+                    'duration': max(0, time.time() - activity['started']),
+                })
         self.judges.on_judge_free(self, packet['submission-id'])
 
     def _ping_thread(self):

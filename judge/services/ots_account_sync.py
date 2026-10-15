@@ -1,3 +1,4 @@
+import hashlib
 import ipaddress
 import json
 import random
@@ -29,19 +30,13 @@ STUDENT_ID = re.compile(r'[BN][0-9]{2}[A-Z]{4}[0-9]{3}', re.ASCII)
 def queue_sync(actor):
     if not actor.is_active or not actor.is_superuser:
         raise SyncError('PERMISSION_DENIED')
-    with transaction.atomic():
-        lock = OTSAccountSyncLock.objects.select_for_update().get(pk=1)
-        if lock.run_id is not None:
-            raise SyncError('SYNC_ALREADY_RUNNING')
-        run = OTSAccountSyncRun.objects.create(triggered_by=actor)
-        lock.run = run
-        lock.save(update_fields=['run'])
+    run = _reserve_sync(actor)
     from judge.tasks.ots_account_sync import sync_ots_accounts
     try:
         sync_ots_accounts.delay(run.pk)
     except Exception:
-        # A broker timeout may still have delivered the message. Fail only if
-        # the worker has not claimed it; a late delivery then becomes a no-op.
+        # Publication may have succeeded despite a timeout. A claimed job must
+        # retain its reservation; a late delivery of a failed job is a no-op.
         with transaction.atomic():
             lock = OTSAccountSyncLock.objects.select_for_update().get(pk=1)
             run.refresh_from_db()
@@ -52,6 +47,17 @@ def queue_sync(actor):
                 run.save()
                 lock.run = None
                 lock.save(update_fields=['run'])
+    return run
+
+
+def _reserve_sync(actor=None):
+    with transaction.atomic():
+        lock = OTSAccountSyncLock.objects.select_for_update().get(pk=1)
+        if lock.run_id is not None:
+            raise SyncError('SYNC_ALREADY_RUNNING')
+        run = OTSAccountSyncRun.objects.create(triggered_by=actor)
+        lock.run = run
+        lock.save(update_fields=['run'])
     return run
 
 
@@ -163,9 +169,13 @@ class OTSAccountSyncService:
                 raise SyncError('USERNAME_CONFLICT')
             if others.filter(email__iexact=email).exists():
                 raise SyncError('EMAIL_CONFLICT')
+            password_digest = hashlib.sha256(item['passwordHash'].encode('ascii')).hexdigest()
             values = {'username': student, 'first_name': name, 'last_name': '', 'email': email,
-                      'password': 'ots_bcrypt$' + item['passwordHash'],
                       'is_active': item['status'] == 'ACTIVE' and not (link and link.local_disabled)}
+            # Django upgrades bcrypt on login. Keep that upgraded hash and its
+            # session authentication hash until the source password changes.
+            if link is None or link.source_password_digest != password_digest:
+                values['password'] = 'ots_bcrypt$' + item['passwordHash']
             changed = any(getattr(user, key) != value for key, value in values.items())
             for key, value in values.items():
                 setattr(user, key, value)
@@ -184,6 +194,7 @@ class OTSAccountSyncService:
             link.ots_student_id = student
             link.ots_status = item['status']
             link.source_updated_at = updated
+            link.source_password_digest = password_digest
             link.last_synced_at = timezone.now()
             link.save()
             return 'created_count' if created else 'updated_count' if changed else 'unchanged_count'

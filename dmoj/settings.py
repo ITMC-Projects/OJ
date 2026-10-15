@@ -316,7 +316,7 @@ else:
             'title': 'DMOJ Admin',
             'menu': {
                 'top': 'wpadmin.menu.menus.BasicTopMenu',
-                'left': 'wpadmin.menu.custom.CustomModelLeftMenuWithDashboard',
+                'left': 'judge.admin.menu.MonitorLeftMenu',
             },
             'custom_menu': [
                 {
@@ -793,3 +793,4 @@ OTS_SYNC_SERVICE_TOKEN = os.environ.get('OTS_SYNC_SERVICE_TOKEN', '')
 OTS_SYNC_TIMEOUT_SECONDS = float(os.environ.get('OTS_SYNC_TIMEOUT_SECONDS', '10'))
 OTS_SYNC_PAGE_SIZE = int(os.environ.get('OTS_SYNC_PAGE_SIZE', '100'))
 OTS_SYNC_ALLOW_INTERNAL_HTTP = os.environ.get('OTS_SYNC_ALLOW_INTERNAL_HTTP', '0') == '1'
+OTS_SYNC_AUTO_ENABLED = os.environ.get('OTS_SYNC_AUTO_ENABLED', '0') == '1'

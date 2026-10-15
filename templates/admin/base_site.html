@@ -1,5 +1,12 @@
 {% extends "admin/base_site.html" %}
 
+{% block userlinks %}
+    {% if perms.judge.view_judge and perms.judge.view_all_submission %}
+        <a href="{% url 'admin_monitor' %}">System monitoring</a> /
+    {% endif %}
+    {{ block.super }}
+{% endblock %}
+
 {% block pretitle %}{{ block.super }}
     <form style="display: none" id="empty-action-form" method="post">
         {% csrf_token %}

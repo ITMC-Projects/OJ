@@ -25,6 +25,7 @@ from judge.services.ots_account_sync import OTSAccountSyncService, SyncError, qu
 @override_settings(OTS_SYNC_API_URL='https://ots.example.test', OTS_SYNC_SERVICE_TOKEN='x' * 32,
                    OTS_SYNC_TIMEOUT_SECONDS=1, OTS_SYNC_PAGE_SIZE=100,
                    OTS_SYNC_ALLOW_INTERNAL_HTTP=False,
+                   OTS_SYNC_AUTO_ENABLED=False,
                    AUTHENTICATION_BACKENDS=['django.contrib.auth.backends.ModelBackend'])
 class AccountSyncTests(TestCase):
     @classmethod
@@ -62,7 +63,10 @@ class AccountSyncTests(TestCase):
         self.assertIsNotNone(authenticate(username=user.username, password='old-password'))
         user.refresh_from_db()
         self.assertTrue(user.password.startswith('pbkdf2_sha256$'))
-        self.assertEqual(self.service.sync_account(self.item), 'updated_count')
+        upgraded = user.password
+        self.assertEqual(self.service.sync_account(self.item), 'unchanged_count')
+        user.refresh_from_db()
+        self.assertEqual(user.password, upgraded)
         self.item['passwordHash'] = bcrypt.hashpw(b'new-password', bcrypt.gensalt(rounds=4)).decode()
         self.service.sync_account(self.item)
         self.assertIsNone(authenticate(username=user.username, password='old-password'))
@@ -80,6 +84,54 @@ class AccountSyncTests(TestCase):
         OTSAccountLink.objects.filter(user=user).update(local_disabled=True)
         self.service.sync_account(self.item)
         self.assertFalse(self.synced_user().is_active)
+
+    def test_repeated_sync_preserves_logged_in_session(self):
+        self.service.sync_account(self.item)
+        user = authenticate(username=self.synced_user().username, password='old-password')
+        client = Client()
+        client.force_login(user)
+        password = user.password
+        for _ in range(3):
+            self.assertEqual(self.service.sync_account(self.item), 'unchanged_count')
+            self.assertEqual(self.synced_user().password, password)
+            self.assertEqual(client.get(reverse('password_change')).status_code, 403)
+            self.assertEqual(client.session.get('_auth_user_id'), str(user.pk))
+        self.item.update(fullName='Updated name', updatedAt=timezone.now().isoformat())
+        self.assertEqual(self.service.sync_account(self.item), 'updated_count')
+        self.assertEqual(self.synced_user().password, password)
+
+    def test_auto_sync_disabled_does_not_create_run(self):
+        from judge.tasks.ots_account_sync import auto_sync_ots_accounts
+        auto_sync_ots_accounts.run()
+        self.assertFalse(OTSAccountSyncRun.objects.exists())
+
+    @override_settings(OTS_SYNC_AUTO_ENABLED=True)
+    def test_auto_sync_records_system_run(self):
+        from judge.tasks.ots_account_sync import auto_sync_ots_accounts
+        page = {'items': [self.item], 'hasMore': False, 'nextCursor': None, 'total': 1}
+        with patch.object(OTSAccountSyncService, 'fetch_page', return_value=page):
+            auto_sync_ots_accounts.run()
+        run = OTSAccountSyncRun.objects.get()
+        self.assertIsNone(run.triggered_by_id)
+        self.assertEqual((run.status, run.created_count), ('SUCCEEDED', 1))
+        self.assertIsNone(OTSAccountSyncLock.objects.get(pk=1).run_id)
+
+    @override_settings(OTS_SYNC_AUTO_ENABLED=True)
+    def test_auto_sync_skips_existing_manual_run(self):
+        from judge.tasks.ots_account_sync import auto_sync_ots_accounts
+        run = self.reserve_run()
+        with patch.object(OTSAccountSyncService, 'fetch_page') as fetch:
+            auto_sync_ots_accounts.run()
+            fetch.assert_not_called()
+        self.assertEqual(OTSAccountSyncRun.objects.count(), 1)
+        self.assertEqual(OTSAccountSyncLock.objects.get(pk=1).run_id, run.pk)
+
+    @override_settings(OTS_SYNC_AUTO_ENABLED=True, OTS_SYNC_SERVICE_TOKEN='')
+    def test_auto_sync_invalid_configuration_does_not_fill_history(self):
+        from judge.tasks.ots_account_sync import auto_sync_ots_accounts
+        with self.assertLogs('judge.ots_sync', level='WARNING'):
+            auto_sync_ots_accounts.run()
+        self.assertFalse(OTSAccountSyncRun.objects.exists())
 
     def test_existing_privileges_preserved(self):
         self.service.sync_account(self.item)

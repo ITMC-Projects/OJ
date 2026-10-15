@@ -16,8 +16,9 @@ from martor.views import markdown_search_user
 from judge.auth.ots_forms import OTSSetPasswordForm
 from judge.feed import AtomBlogFeed, AtomCommentFeed, AtomProblemFeed, BlogFeed, CommentFeed, ProblemFeed
 from judge.sitemap import sitemaps
-from judge.views import TitledTemplateView, api, blog, comment, contests, language, license, mailgun, organization, \
-    preview, problem, problem_manage, ranked_submission, register, stats, status, submission, tag, tasks, ticket, \
+from judge.views import TitledTemplateView, api, blog, comment, contests, language, license, mailgun, monitor, \
+    organization, preview, problem, problem_manage, ranked_submission, register, stats, status, submission, tag, \
+    tasks, ticket, \
     two_factor, user, widgets
 from judge.views.magazine import MagazinePage
 from judge.views.problem_data import ProblemDataView, ProblemSubmissionDiff, \
@@ -105,6 +106,10 @@ def paged_list_view(view, name):
 urlpatterns = [
     path('', blog.PostList.as_view(template_name='home.html', title=_('Home')), kwargs={'page': 1}, name='home'),
     path('500/', exception),
+    path('admin/monitor/', monitor.dashboard, name='admin_monitor'),
+    path('admin/monitor/api/overview/', monitor.overview_api, name='admin_monitor_overview'),
+    path('admin/monitor/api/judges/<str:name>/', monitor.judge_api, name='admin_monitor_judge_api'),
+    path('admin/monitor/judges/<str:name>/', monitor.dashboard, name='admin_monitor_judge'),
     path('admin/', admin.site.urls),
     path('i18n/', include('django.conf.urls.i18n')),
     path('accounts/', include(register_patterns)),

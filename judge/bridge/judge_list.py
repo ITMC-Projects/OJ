@@ -1,5 +1,6 @@
 import logging
-from collections import namedtuple
+import time
+from collections import deque, namedtuple
 from random import random
 from threading import RLock
 
@@ -21,6 +22,65 @@ PriorityMarker = namedtuple('PriorityMarker', 'priority')
 class JudgeList(object):
     priorities = 4
 
+    def monitoring_snapshot(self, offset=0, limit=100):
+        # Only copy bounded, allowlisted primitive data under the scheduler lock.
+        # No ORM, socket writes, or scheduler mutations are allowed here.
+        with self.lock:
+            now = time.time()
+            completed = [item for item in self.monitor_completed if item['finished'] >= now - 300]
+            queue = []
+            position = priority = 0
+            node = self.queue.first
+            while node and position < offset + limit:
+                value = node.value
+                if isinstance(value, PriorityMarker):
+                    priority = value.priority + 1
+                else:
+                    if position >= offset:
+                        sid, problem, language, source, target, banned = value
+                        queue.append({'id': sid, 'problem': problem, 'language': language,
+                                      'priority': priority, 'target': target, 'banned': list(banned)})
+                    position += 1
+                node = node.next
+            reserve = self.should_reserve_judge()
+            judges = []
+            for judge in self.judges:
+                reasons = []
+                for item in queue:
+                    reason = 'eligible; awaiting scheduler dispatch'
+                    if judge.working:
+                        reason = 'busy'
+                    elif judge.is_disabled:
+                        reason = 'disabled'
+                    elif judge.tier != self.min_tier:
+                        reason = 'standby tier'
+                    elif judge.name in item['banned']:
+                        reason = 'contest ban'
+                    elif item['target'] and item['target'] != judge.name:
+                        reason = 'assigned to another judge'
+                    elif item['problem'] not in judge.problems:
+                        reason = 'problem unavailable'
+                    elif item['language'] not in judge.executors:
+                        reason = 'runtime unavailable'
+                    elif item['priority'] >= REJUDGE_PRIORITY and reserve:
+                        reason = 'reserved for higher priority work'
+                    reasons.append({'submission': item['id'], 'reason': reason})
+                judges.append({'name': judge.name, 'disabled': judge.is_disabled, 'tier': judge.tier,
+                               'submission': judge.get_current_submission(), 'ping_seconds': judge.latency,
+                               'load': judge.load if 0 <= judge.load < 1e99 else None,
+                               'last_ping': getattr(judge, 'monitor_last_ping', None),
+                               'activity': dict(getattr(judge, 'monitor_activity', {})),
+                               'metrics': dict(getattr(judge, 'monitor_metrics', {})),
+                               'languages': list(judge.executors), 'diagnostics': reasons})
+            return {'name': 'monitor-state', 'captured_at': time.time(), 'judges': judges,
+                    'queue': queue, 'queue_total': len(self.node_map), 'offset': offset,
+                    'limit': limit, 'min_tier': self.min_tier,
+                    'execution': {'window_seconds': min(300, now - self.monitor_started),
+                                  'completed': len(completed),
+                                  'internal_errors': sum(item['event'] == 'internal-error' for item in completed),
+                                  'grading_seconds': [item['duration'] for item in completed],
+                                  'truncated': bool(completed and len(completed) == self.monitor_completed.maxlen)}}
+
     def __init__(self):
         self.queue = dllist()
         self.priority = [self.queue.append(PriorityMarker(i)) for i in range(self.priorities)]
@@ -31,6 +91,8 @@ class JudgeList(object):
         self.min_tier = None
         self.problems = set()
         self.problem_ids = []
+        self.monitor_started = time.time()
+        self.monitor_completed = deque(maxlen=10000)
 
     def _handle_free_judge(self, judge):
         with self.lock:
