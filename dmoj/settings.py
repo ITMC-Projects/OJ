@@ -431,6 +431,7 @@ MIDDLEWARE = (
     'judge.middleware.APIMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'judge.auth.ots_middleware.OTSCredentialMiddleware',
     'judge.middleware.MiscConfigMiddleware',
     'judge.middleware.DMOJLoginMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -726,6 +727,10 @@ AUTHENTICATION_BACKENDS = (
     'social_core.backends.google.GoogleOAuth2',
     'social_core.backends.facebook.FacebookOAuth2',
     'judge.social_auth.GitHubSecureEmailOAuth2',
+    'judge.auth.ots_backend.OTSModelBackend',
+    # Preserve existing local users' session backend path. The OTS backend above
+    # raises PermissionDenied for every rejected linked attempt, terminating the
+    # authentication chain before this compatibility entry can verify a cache.
     'django.contrib.auth.backends.ModelBackend',
     'judge.ip_auth.IPBasedAuthBackend',
 )
@@ -794,3 +799,11 @@ OTS_SYNC_TIMEOUT_SECONDS = float(os.environ.get('OTS_SYNC_TIMEOUT_SECONDS', '10'
 OTS_SYNC_PAGE_SIZE = int(os.environ.get('OTS_SYNC_PAGE_SIZE', '100'))
 OTS_SYNC_ALLOW_INTERNAL_HTTP = os.environ.get('OTS_SYNC_ALLOW_INTERNAL_HTTP', '0') == '1'
 OTS_SYNC_AUTO_ENABLED = os.environ.get('OTS_SYNC_AUTO_ENABLED', '0') == '1'
+
+# Linked authentication stays fail-closed while password change UI is disabled.
+OTS_PASSWORD_CHANGE_ENABLED = os.environ.get('OTS_PASSWORD_CHANGE_ENABLED', '0') == '1'
+OTS_PASSWORD_API_URL = os.environ.get('OTS_PASSWORD_API_URL') or OTS_SYNC_API_URL
+OTS_PASSWORD_SERVICE_TOKEN = os.environ.get('OTS_PASSWORD_SERVICE_TOKEN', '')
+OTS_CREDENTIAL_READ_TOKEN = os.environ.get('OTS_CREDENTIAL_READ_TOKEN', '')
+OTS_CALLBACK_TOKEN = os.environ.get('OTS_CALLBACK_TOKEN', '')
+OTS_PASSWORD_TIMEOUT_SECONDS = float(os.environ.get('OTS_PASSWORD_TIMEOUT_SECONDS', '5'))

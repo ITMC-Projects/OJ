@@ -1,6 +1,6 @@
 from django.contrib.auth.backends import ModelBackend
 
-from judge.models import Profile
+from judge.models import OTSAccountLink, Profile
 
 
 class IPBasedAuthBackend(ModelBackend):
@@ -10,4 +10,6 @@ class IPBasedAuthBackend(ModelBackend):
             user = Profile.objects.select_related('user').get(ip_auth=ip_auth).user
         except Profile.DoesNotExist:
             pass
+        if user and OTSAccountLink.objects.filter(user=user).exists():
+            return None
         return user if self.user_can_authenticate(user) else None

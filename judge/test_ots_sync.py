@@ -2,30 +2,35 @@ import io
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import bcrypt
 import requests
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import Permission, User
+from django.core.cache import cache
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.core.exceptions import ValidationError
 from django.db import connections
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from judge.auth.ots_forms import OTSPasswordResetForm, OTSSetPasswordForm
+from judge.auth.ots_backend import OTSModelBackend
+from judge.auth.ots_forms import OTSChangePasswordForm, OTSPasswordResetForm, OTSSetPasswordForm
 from judge.auth.ots_password_hasher import OTSBcryptPasswordHasher, valid_source_hash
 from judge.models import Language, OTSAccountLink, OTSAccountSyncLock, OTSAccountSyncRun, Profile
 from judge.services.ots_account_sync import OTSAccountSyncService, SyncError, queue_sync
+from judge.services.ots_password import OTSPasswordClient
 
 
 @override_settings(OTS_SYNC_API_URL='https://ots.example.test', OTS_SYNC_SERVICE_TOKEN='x' * 32,
                    OTS_SYNC_TIMEOUT_SECONDS=1, OTS_SYNC_PAGE_SIZE=100,
                    OTS_SYNC_ALLOW_INTERNAL_HTTP=False,
                    OTS_SYNC_AUTO_ENABLED=False,
+                   OTS_PASSWORD_API_URL='https://ots.example.test', OTS_PASSWORD_SERVICE_TOKEN='w' * 32,
+                   OTS_CREDENTIAL_READ_TOKEN='r' * 32, OTS_PASSWORD_TIMEOUT_SECONDS=1,
                    AUTHENTICATION_BACKENDS=['django.contrib.auth.backends.ModelBackend'])
 class AccountSyncTests(TestCase):
     @classmethod
@@ -38,6 +43,12 @@ class AccountSyncTests(TestCase):
         self.item = {'id': str(uuid.uuid4()), 'studentId': 'n23dccn001', 'fullName': 'Nguyễn Văn A',
                      'email': 'student@example.test', 'role': 'USER', 'status': 'ACTIVE',
                      'passwordHash': self.raw_hash, 'updatedAt': timezone.now().isoformat()}
+        # These legacy sync tests exercise local hash upgrades separately from
+        # authoritative authentication; the new tests below cover fail-closed IO.
+        authority = patch('judge.auth.ots_middleware.OTSPasswordClient.state', return_value={
+            'userId': self.item['id'], 'credentialVersion': 0, 'status': 'ACTIVE'})
+        authority.start()
+        self.addCleanup(authority.stop)
         OTSAccountSyncLock.objects.get_or_create(pk=1)
 
     def synced_user(self):
@@ -207,6 +218,17 @@ class AccountSyncTests(TestCase):
         client.force_login(user)
         self.assertEqual(client.get(reverse('password_change')).status_code, 403)
 
+    def test_admin_site_own_password_and_management_command_cannot_bypass_ots(self):
+        self.service.sync_account(self.item)
+        user = self.synced_user()
+        user.is_staff = True
+        user.save(update_fields=['is_staff'])
+        client = Client()
+        client.force_login(user)
+        self.assertEqual(client.get(reverse('admin:password_change')).status_code, 403)
+        with self.assertRaisesRegex(CommandError, 'Linked account passwords'):
+            call_command('changepassword', user.username)
+
     def test_bcrypt_variants_and_invalid_hash(self):
         hasher = OTSBcryptPasswordHasher()
         for prefix in ('$2a$', '$2b$', '$2y$'):
@@ -222,6 +244,198 @@ class AccountSyncTests(TestCase):
         run = OTSAccountSyncRun.objects.create()
         OTSAccountSyncLock.objects.filter(pk=1).update(run=run)
         return run
+
+    def test_version_prevents_late_full_sync_overwrite(self):
+        first = {**self.item, 'credentialVersion': 1}
+        self.service.sync_account(first)
+        latest = {**first, 'credentialVersion': 3,
+                  'passwordHash': bcrypt.hashpw(b'Newest1!', bcrypt.gensalt(rounds=4)).decode()}
+        self.service.sync_account(latest)
+        before = self.synced_user().password
+        self.service.sync_account(first)
+        self.service.sync_account({**first, 'credentialVersion': 2})
+        self.assertEqual(self.synced_user().password, before)
+        self.assertEqual(self.synced_user().ots_account_link.source_credential_version, 3)
+        self.service.sync_account(latest)
+        self.assertEqual(self.synced_user().password, before)
+
+    def test_equal_version_different_hash_is_rejected(self):
+        self.item['credentialVersion'] = 1
+        self.service.sync_account(self.item)
+        self.item['passwordHash'] = bcrypt.hashpw(b'Other1!', bcrypt.gensalt(rounds=4)).decode()
+        with self.assertRaisesRegex(SyncError, 'CREDENTIAL_VERSION_CONFLICT'):
+            self.service.sync_account(self.item)
+
+    def test_linked_backend_never_uses_cached_password_when_authority_fails(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 1})
+        cache.clear()
+        with patch.object(OTSPasswordClient, 'verify', side_effect=SyncError('OTS_UNAVAILABLE')):
+            with self.assertRaises(PermissionDenied):
+                OTSModelBackend().authenticate(None, username=self.synced_user().username, password='old-password')
+
+    @override_settings(AUTHENTICATION_BACKENDS=[
+        'judge.auth.ots_backend.OTSModelBackend', 'django.contrib.auth.backends.ModelBackend'])
+    def test_legacy_session_compatibility_never_enables_linked_password_fallback(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 1})
+        cache.clear()
+        with patch.object(OTSPasswordClient, 'verify', side_effect=SyncError('OTS_UNAVAILABLE')), \
+                patch.object(User, 'check_password', side_effect=AssertionError('stale cache used')):
+            self.assertIsNone(authenticate(username=self.synced_user().username, password='old-password'))
+        local = User.objects.create_user('legacy-local', password='Local1!')
+        client = Client()
+        client.force_login(local, backend='django.contrib.auth.backends.ModelBackend')
+        from django.contrib.auth import get_user
+        from django.test import RequestFactory
+        request = RequestFactory().get('/')
+        request.session = client.session
+        self.assertEqual(get_user(request).pk, local.pk)
+
+    def test_local_backend_works_without_ots(self):
+        User.objects.create_user('standalone', password='Local1!')
+        with patch.object(OTSPasswordClient, 'verify', side_effect=AssertionError('must not call OTS')):
+            self.assertIsNotNone(OTSModelBackend().authenticate(None, username='standalone', password='Local1!'))
+
+    def test_linked_backend_checks_uuid_and_version(self):
+        item = {**self.item, 'credentialVersion': 1}
+        self.service.sync_account(item)
+        cache.clear()
+        with patch.object(OTSPasswordClient, 'verify', return_value={'credentialVersion': 1}), \
+                patch.object(OTSPasswordClient, 'credentials', return_value=item):
+            self.assertIsNotNone(OTSModelBackend().authenticate(
+                None, username=self.synced_user().username, password='old-password'))
+        response = {'userId': str(uuid.uuid4()), 'credentialVersion': 1}
+        with patch.object(OTSPasswordClient, 'call', return_value=response):
+            with self.assertRaisesRegex(SyncError, 'INVALID_RESPONSE'):
+                OTSPasswordClient().verify(self.item['id'], 'old-password')
+
+    def test_local_disabled_blocks_remote_authentication(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 1})
+        OTSAccountLink.objects.update(local_disabled=True)
+        cache.clear()
+        with patch.object(OTSPasswordClient, 'verify') as verify:
+            with self.assertRaises(PermissionDenied):
+                OTSModelBackend().authenticate(None, username=self.synced_user().username, password='old-password')
+            verify.assert_not_called()
+
+    def test_timeout_after_commit_queries_receipt_without_retrying_mutation(self):
+        operation = uuid.uuid4()
+        receipt = {'operationId': str(operation), 'credentialVersion': 2}
+        with patch.object(OTSPasswordClient, 'call', side_effect=[SyncError('OTS_UNAVAILABLE'), receipt]) as call:
+            self.assertEqual(OTSPasswordClient().change(self.item['id'], 'old-password', 'New1!', operation), receipt)
+            self.assertEqual(call.call_count, 2)
+            self.assertIn('password/operations/', call.call_args.args[1])
+        with patch.object(OTSPasswordClient, 'call', side_effect=SyncError('OTS_UNAVAILABLE')):
+            with self.assertRaisesRegex(SyncError, 'PASSWORD_OUTCOME_UNKNOWN'):
+                OTSPasswordClient().change(self.item['id'], 'old-password', 'New1!', operation)
+
+    def test_password_http_client_rejects_redirects_and_oversized_responses(self):
+        for status, body, code in [(302, b'{}', 'OTS_UNAVAILABLE'),
+                                   (200, b'x' * 16385, 'INVALID_RESPONSE')]:
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.status_code = status
+            response.iter_content.return_value = [body]
+            session = MagicMock()
+            session.__enter__.return_value = session
+            session.request.return_value = response
+            with patch('judge.services.ots_password.requests.Session', return_value=session):
+                with self.assertRaisesRegex(SyncError, code):
+                    OTSPasswordClient().call(self.item['id'], 'credential-state', read=True)
+            self.assertFalse(session.trust_env)
+            self.assertFalse(session.request.call_args.kwargs['allow_redirects'])
+            self.assertEqual(session.request.call_args.kwargs['timeout'], (1, 1))
+            self.assertEqual(session.request.call_args.kwargs['headers']['X-Service-Token'], 'r' * 32)
+
+    @override_settings(OTS_PASSWORD_SERVICE_TOKEN='')
+    def test_missing_password_capability_rejects_before_network_call(self):
+        with patch('judge.services.ots_password.requests.Session') as session:
+            with self.assertRaisesRegex(SyncError, 'INVALID_CONFIGURATION'):
+                OTSPasswordClient().verify(self.item['id'], 'old-password')
+            session.assert_not_called()
+
+    @override_settings(OTS_PASSWORD_CHANGE_ENABLED=True)
+    def test_linked_form_delegates_policy_and_does_not_write_local_password(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 1})
+        user = self.synced_user()
+        before = user.password
+        form = OTSChangePasswordForm(user, {
+            'old_password': 'old-password', 'new_password1': 'weak', 'new_password2': 'weak'})
+        self.assertTrue(form.is_valid())
+        cache.clear()
+        with patch.object(OTSPasswordClient, 'change', side_effect=SyncError('INVALID_PASSWORD')):
+            with self.assertRaisesRegex(SyncError, 'INVALID_PASSWORD'):
+                form.save()
+        user.refresh_from_db()
+        self.assertEqual(user.password, before)
+
+    @override_settings(OTS_CALLBACK_TOKEN='c' * 32)
+    def test_event_replay_and_wrong_token(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 2})
+        body = {'eventId': str(uuid.uuid4()), 'userId': self.item['id'],
+                'credentialVersion': 1, 'occurredAt': timezone.now().isoformat()}
+        client = Client()
+        endpoint = '/internal/ots/password-changed'
+        self.assertEqual(client.post(endpoint, body, content_type='application/json').status_code, 401)
+        with patch.object(OTSPasswordClient, 'credentials') as fetch:
+            for _ in range(2):
+                self.assertEqual(client.post(endpoint, body, content_type='application/json',
+                                             HTTP_X_SERVICE_TOKEN='c' * 32).status_code, 204)
+            fetch.assert_not_called()
+
+    @override_settings(OTS_CALLBACK_TOKEN='c' * 32)
+    def test_event_fetches_latest_and_invalidates_cached_password(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 1})
+        latest = {**self.item, 'credentialVersion': 3,
+                  'passwordHash': bcrypt.hashpw(b'Newest1!', bcrypt.gensalt(rounds=4)).decode()}
+        body = {'eventId': str(uuid.uuid4()), 'userId': self.item['id'],
+                'credentialVersion': 2, 'occurredAt': timezone.now().isoformat()}
+        cache.clear()
+        with patch.object(OTSPasswordClient, 'credentials', return_value=latest):
+            response = Client().post('/internal/ots/password-changed', body, content_type='application/json',
+                                     HTTP_X_SERVICE_TOKEN='c' * 32)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.synced_user().ots_account_link.source_credential_version, 3)
+        self.assertFalse(self.synced_user().check_password('old-password'))
+        self.assertTrue(self.synced_user().check_password('Newest1!'))
+
+    def test_existing_linked_session_fails_closed_before_reconciliation(self):
+        item = {**self.item, 'credentialVersion': 1}
+        self.service.sync_account(item)
+        client = Client()
+        client.force_login(self.synced_user())
+        with patch('judge.auth.ots_middleware.OTSPasswordClient.state',
+                   side_effect=SyncError('OTS_UNAVAILABLE')):
+            self.assertEqual(client.get(reverse('password_change')).status_code, 503)
+        with patch('judge.auth.ots_middleware.OTSPasswordClient.state',
+                   return_value={'status': 'ACTIVE', 'credentialVersion': 2}):
+            self.assertEqual(client.get(reverse('password_change')).status_code, 401)
+        self.assertNotIn('_auth_user_id', client.session)
+
+    @override_settings(OTS_PASSWORD_CHANGE_ENABLED=True)
+    def test_committed_change_survives_cache_refresh_failure(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 1})
+        form = OTSChangePasswordForm(self.synced_user(), {
+            'old_password': 'old-password', 'new_password1': 'NewPass1!', 'new_password2': 'NewPass1!'})
+        self.assertTrue(form.is_valid())
+        operation = uuid.uuid4()
+        cache.clear()
+        with patch('judge.auth.ots_forms.uuid.uuid4', return_value=operation), \
+                patch.object(OTSPasswordClient, 'change', return_value={
+                    'operationId': str(operation), 'credentialVersion': 2}), \
+                patch.object(OTSPasswordClient, 'credentials', side_effect=SyncError('OTS_UNAVAILABLE')):
+            self.assertEqual(form.save().pk, self.synced_user().pk)
+
+    def test_linked_rate_limit_is_bounded_and_cache_failure_denies(self):
+        self.service.sync_account({**self.item, 'credentialVersion': 1})
+        cache.clear()
+        with patch.object(OTSPasswordClient, 'verify', side_effect=SyncError('OTS_UNAVAILABLE')) as verify:
+            for _ in range(11):
+                with self.assertRaises(PermissionDenied):
+                    OTSModelBackend().authenticate(None, username=self.synced_user().username, password='old-password')
+            self.assertEqual(verify.call_count, 10)
+        with patch('judge.auth.ots_backend.cache.add', side_effect=RuntimeError()):
+            with self.assertRaises(PermissionDenied):
+                OTSModelBackend().authenticate(None, username=self.synced_user().username, password='old-password')
 
     def test_run_continues_after_account_error_and_releases_lock(self):
         run = self.reserve_run()

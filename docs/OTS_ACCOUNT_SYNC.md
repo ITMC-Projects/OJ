@@ -83,9 +83,12 @@ Edit **local_disabled** on that link to lock a user locally. It takes effect
 immediately and survives later OTS ACTIVE exports. A BLOCKED OTS user stays
 inactive. An ordinary `is_active` edit is not a persistent local override.
 
-Linked users must change/reset passwords on OTS. OJ's change, reset-mail,
-reset-confirm and admin-password routes reject local password changes for
-linked accounts; local OJ users retain existing behavior.
+Linked users may change passwords on OJ when `OTS_PASSWORD_CHANGE_ENABLED=1`.
+That form calls OTS with the current password; only OTS writes the authoritative
+password. Django reset-mail, reset-confirm, Admin and the `changepassword`
+management command cannot independently reset linked credentials. Recovery
+remains with OTS; no service-token-only recovery API is provided. Local OJ users
+retain Django authentication. See [PASSWORD_SYNC.md](PASSWORD_SYNC.md).
 
 ## Failure and recovery
 

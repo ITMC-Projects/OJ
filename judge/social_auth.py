@@ -92,6 +92,9 @@ def get_username_password(backend, user, username=None, *args, **kwargs):
 
 def add_password(user, password=None, *args, **kwargs):
     if password:
+        from judge.models import OTSAccountLink
+        if OTSAccountLink.objects.filter(user=user).exists():
+            raise forms.ValidationError('Linked account passwords must be changed through OTS.')
         user.set_password(password)
         user.save()
 

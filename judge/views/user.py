@@ -33,13 +33,14 @@ from django.views.decorators.http import require_POST
 from django.views.generic import DetailView, FormView, ListView, TemplateView, View
 from reversion import revisions
 
-from judge.auth.ots_forms import OTSPasswordResetForm
+from judge.auth.ots_forms import OTSChangePasswordForm, OTSPasswordResetForm
 from judge.forms import CustomAuthenticationForm, ProfileForm, UserBanForm, UserDownloadDataForm, UserForm, \
     newsletter_id
-from judge.models import BlogPost, Organization, OTSAccountLink, Profile, Submission
+from judge.models import BlogPost, OTSAccountLink, Organization, Profile, Submission
 from judge.models import Comment
 from judge.performance_points import get_pp_breakdown
 from judge.ratings import rating_class, rating_progress
+from judge.services.ots_account_sync import SyncError
 from judge.tasks import prepare_user_data
 from judge.utils.celery import task_status_by_id, task_status_url_by_id
 from judge.utils.infinite_paginator import InfinitePaginationMixin
@@ -180,11 +181,33 @@ class CustomPasswordChangeView(PasswordChangeView):
     template_name = 'registration/password_change_form.html'
 
     def dispatch(self, request, *args, **kwargs):
-        if request.user.is_authenticated and OTSAccountLink.objects.filter(user=request.user).exists():
-            return HttpResponse('Tài khoản OTS phải đổi mật khẩu tại OTS.', status=403)
+        if (request.user.is_authenticated and not settings.OTS_PASSWORD_CHANGE_ENABLED and
+                OTSAccountLink.objects.filter(user=request.user).exists()):
+            return HttpResponse('Vui lòng đổi mật khẩu tại OTS.', status=403)
         return super().dispatch(request, *args, **kwargs)
 
+    def get_form_class(self):
+        if OTSAccountLink.objects.filter(user=self.request.user).exists():
+            return OTSChangePasswordForm
+        return super().get_form_class()
+
     def form_valid(self, form):
+        if isinstance(form, OTSChangePasswordForm):
+            try:
+                form.save()
+            except SyncError as error:
+                messages = {
+                    'CURRENT_PASSWORD_INVALID': 'Mật khẩu hiện tại không đúng.',
+                    'INVALID_PASSWORD': 'Mật khẩu mới cần 6–72 byte UTF-8, chữ hoa, chữ thường, số và ký tự đặc biệt.',
+                    'PASSWORD_OUTCOME_UNKNOWN': ('Chưa xác định được kết quả. Hãy kiểm tra đăng nhập bằng mật khẩu mới '
+                                                 'trước khi thử lại.'),
+                    'RATE_LIMITED': 'Bạn đã thử quá nhiều lần. Vui lòng thử lại sau.',
+                    'USER_BLOCKED': 'Tài khoản không được phép đổi mật khẩu.',
+                }
+                form.add_error(None, messages.get(str(error), 'Dịch vụ tài khoản tạm thời không khả dụng.'))
+                return self.form_invalid(form)
+            auth_logout(self.request)
+            return HttpResponseRedirect(self.get_success_url())
         self.request.session['password_pwned'] = False
         return super().form_valid(form)
 

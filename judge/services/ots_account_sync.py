@@ -15,6 +15,7 @@ from django.core.validators import validate_email
 from django.db import DatabaseError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.views.decorators.debug import sensitive_variables
 
 from judge.auth.ots_password_hasher import valid_source_hash
 from judge.models import OTSAccountLink, OTSAccountSyncError, OTSAccountSyncLock, OTSAccountSyncRun, Profile
@@ -61,6 +62,7 @@ def _reserve_sync(actor=None):
     return run
 
 
+@sensitive_variables()
 def validate_account(item):
     if not isinstance(item, dict):
         raise SyncError('SOURCE_DATA_INVALID')
@@ -109,6 +111,7 @@ class OTSAccountSyncService:
                 not 0 < self.timeout <= 120 or not 1 <= self.page_size <= 200):
             raise SyncError('INVALID_CONFIGURATION')
 
+    @sensitive_variables()
     def fetch_page(self, session, cursor):
         for attempt in range(3):
             try:
@@ -158,18 +161,29 @@ class OTSAccountSyncService:
         elif page['nextCursor'] is not None:
             raise SyncError('SOURCE_DATA_INVALID')
 
+    @sensitive_variables()
     def sync_account(self, item):
         source_id, student, name, email, updated = validate_account(item)
         User = get_user_model()
         with transaction.atomic():
             link = OTSAccountLink.objects.select_for_update().filter(ots_user_id=source_id).first()
+            version = item.get('credentialVersion', 0)
+            if type(version) is not int or version < 0:
+                raise SyncError('SOURCE_DATA_INVALID')
+            if link and (version < link.source_credential_version or
+                         (version == link.source_credential_version and updated < link.source_updated_at)):
+                return 'unchanged_count'
+            incoming_digest = hashlib.sha256(item['passwordHash'].encode('ascii')).hexdigest()
+            if (link and version == link.source_credential_version and version > 0 and
+                    link.source_password_digest != incoming_digest):
+                raise SyncError('CREDENTIAL_VERSION_CONFLICT')
             user = User.objects.select_for_update().get(pk=link.user_id) if link else User()
             others = User.objects.exclude(pk=user.pk) if user.pk else User.objects.all()
             if others.filter(username__iexact=student).exists():
                 raise SyncError('USERNAME_CONFLICT')
             if others.filter(email__iexact=email).exists():
                 raise SyncError('EMAIL_CONFLICT')
-            password_digest = hashlib.sha256(item['passwordHash'].encode('ascii')).hexdigest()
+            password_digest = incoming_digest
             values = {'username': student, 'first_name': name, 'last_name': '', 'email': email,
                       'is_active': item['status'] == 'ACTIVE' and not (link and link.local_disabled)}
             # Django upgrades bcrypt on login. Keep that upgraded hash and its
@@ -194,6 +208,7 @@ class OTSAccountSyncService:
             link.ots_student_id = student
             link.ots_status = item['status']
             link.source_updated_at = updated
+            link.source_credential_version = version
             link.source_password_digest = password_digest
             link.last_synced_at = timezone.now()
             link.save()
