@@ -14,6 +14,7 @@ from django.views.generic import RedirectView
 from martor.views import markdown_search_user
 
 from judge.views.ots_password import password_changed
+from judge.views.ots_scores import contest_scores
 from judge.auth.ots_forms import OTSSetPasswordForm
 from judge.feed import AtomBlogFeed, AtomCommentFeed, AtomProblemFeed, BlogFeed, CommentFeed, ProblemFeed
 from judge.sitemap import sitemaps
@@ -106,6 +107,7 @@ def paged_list_view(view, name):
 
 urlpatterns = [
     path('internal/ots/password-changed', password_changed),
+    path('internal/ots/contest-scores', contest_scores),
     path('', blog.PostList.as_view(template_name='home.html', title=_('Home')), kwargs={'page': 1}, name='home'),
     path('500/', exception),
     path('admin/monitor/', monitor.dashboard, name='admin_monitor'),

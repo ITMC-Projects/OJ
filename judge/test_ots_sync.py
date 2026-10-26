@@ -602,3 +602,41 @@ class SyncConcurrencyTests(TransactionTestCase):
             results = list(executor.map(lambda _: enqueue(), range(2)))
         self.assertCountEqual(results, ['QUEUED', 'SYNC_ALREADY_RUNNING'])
         self.assertEqual(OTSAccountSyncRun.objects.filter(triggered_by=actor).count(), 1)
+
+
+@override_settings(OTS_SCORE_EXPORT_TOKEN='s' * 32)
+class ContestScoreExportTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        from datetime import timedelta
+        from judge.models import Contest
+        now = timezone.now()
+        cls.contest = Contest.objects.create(key='ots-test', name='OTS test', start_time=now, end_time=now + timedelta(hours=1))
+        for name, score in (('20210001', 70.0), ('20210002', 30.0)):
+            user = User.objects.create(username=name)
+            profile = Profile.objects.get_or_create(user=user)[0]
+            from judge.models import ContestParticipation
+            ContestParticipation.objects.create(contest=cls.contest, user=profile, score=score, virtual=0)
+
+    def get(self, token='s' * 32, **params):
+        headers = {'HTTP_X_SERVICE_TOKEN': token} if token is not None else {}
+        return Client().get('/internal/ots/contest-scores', params, **headers)
+
+    def test_requires_token(self):
+        self.assertEqual(self.get(token='bad', contest='ots-test').status_code, 401)
+        self.assertEqual(self.get(token=None, contest='ots-test').status_code, 401)
+
+    @override_settings(OTS_SCORE_EXPORT_TOKEN='')
+    def test_disabled_without_configured_token(self):
+        self.assertEqual(self.get(token='', contest='ots-test').status_code, 401)
+
+    def test_returns_scores_by_key_or_path_with_pagination(self):
+        data = self.get(contest='/contest/ots-test/ranking/', limit=1).json()
+        self.assertEqual([i['username'] for i in data['items']], ['20210001'])
+        self.assertTrue(data['hasMore'])
+        page2 = self.get(contest='ots-test', after=data['nextCursor']).json()
+        self.assertEqual([(i['username'], i['score']) for i in page2['items']], [('20210002', 30.0)])
+        self.assertFalse(page2['hasMore'])
+
+    def test_unknown_contest_is_404(self):
+        self.assertEqual(self.get(contest='missing').status_code, 404)
